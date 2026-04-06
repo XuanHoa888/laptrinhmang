@@ -1,0 +1,91 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
+#pragma comment(lib, "ws2_32.lib")
+
+#define PORT 9999
+#define MAX_CLIENTS 10
+#define BUFFER_SIZE 1024
+
+void process(char* in, char* out) {
+    char w[10][50];
+    int c = 0;
+    char t[BUFFER_SIZE];
+    strcpy(t, in);
+    char* tk = strtok(t, " \r\n");
+    while (tk != NULL && c < 10) {
+        strcpy(w[c++], tk);
+        tk = strtok(NULL, " \r\n");
+    }
+    if (c < 2) return;
+    char ten[50], hd[10] = "", ms[20];
+    strcpy(ten, w[c - 2]);
+    for(int i = 0; ten[i]; i++) ten[i] = tolower(ten[i]);
+    for (int i = 0; i < c - 2; i++) {
+        char f = (char)tolower(w[i][0]);
+        strncat(hd, &f, 1);
+    }
+    char* f_ms = w[c - 1];
+    int l = strlen(f_ms);
+    strcpy(ms, (l > 6) ? (f_ms + l - 6) : f_ms);
+    sprintf(out, "%s.%s%s@sis.hust.edu.vn\n", ten, hd, ms);
+}
+
+int main() {
+    WSADATA d;
+    SOCKET m, n, cl[MAX_CLIENTS];
+    struct sockaddr_in s_a, c_a;
+    int a_l = sizeof(s_a);
+    char b[BUFFER_SIZE];
+    fd_set r;
+
+    WSAStartup(MAKEWORD(2, 2), &d);
+    for (int i = 0; i < MAX_CLIENTS; i++) cl[i] = 0;
+
+    m = socket(AF_INET, SOCK_STREAM, 0);
+    s_a.sin_family = AF_INET;
+    s_a.sin_addr.s_addr = INADDR_ANY;
+    s_a.sin_port = htons(PORT);
+
+    if (bind(m, (struct sockaddr *)&s_a, sizeof(s_a)) == SOCKET_ERROR) return 1;
+    listen(m, 3);
+
+    while (1) {
+        FD_ZERO(&r);
+        FD_SET(m, &r);
+        for (int i = 0; i < MAX_CLIENTS; i++) if (cl[i] > 0) FD_SET(cl[i], &r);
+        
+        select(0, &r, NULL, NULL, NULL);
+
+        if (FD_ISSET(m, &r)) {
+            n = accept(m, (struct sockaddr *)&c_a, &a_l);
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (cl[i] == 0) {
+                    cl[i] = n;
+                    break;
+                }
+            }
+        }
+
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            if (FD_ISSET(cl[i], &r)) {
+                int v = recv(cl[i], b, BUFFER_SIZE, 0);
+                if (v <= 0) {
+                    closesocket(cl[i]);
+                    cl[i] = 0;
+                } else {
+                    b[v] = '\0';
+                    char res[256] = "";
+                    process(b, res);
+                    if (strlen(res) > 0) send(cl[i], res, strlen(res), 0);
+                }
+            }
+        }
+    }
+    WSACleanup();
+    return 0;
+}
