@@ -1,0 +1,171 @@
+#include <stdio.h>
+#include <winsock2.h>
+#include <string.h>
+
+#pragma comment(lib, "ws2_32.lib")
+
+#define PORT 9000
+#define MAX_CLIENTS 10
+#define BUFFER_SIZE 2048
+
+typedef struct {
+    SOCKET socket;
+    int logged_in;
+    char cmd_buffer[BUFFER_SIZE];
+} Client;
+
+int check_login(char *user, char *pass) {
+    FILE *f = fopen("accounts.txt", "r");
+    if (f == NULL) return 0;
+
+    char f_user[50], f_pass[50];
+    while (fscanf(f, "%s %s", f_user, f_pass) != EOF) {
+        if (strcmp(user, f_user) == 0 && strcmp(pass, f_pass) == 0) {
+            fclose(f);
+            return 1;
+        }
+    }
+    fclose(f);
+    return 0;
+}
+
+void send_command_result(SOCKET s) {
+    FILE *f = fopen("out.txt", "r");
+    if (f == NULL) return;
+
+    char line[BUFFER_SIZE];
+    while (fgets(line, sizeof(line), f)) {
+        send(s, line, (int)strlen(line), 0);
+    }
+    fclose(f);
+}
+
+int main() {
+    WSADATA wsa;
+    SOCKET master_socket;
+    struct sockaddr_in server;
+    Client clients[MAX_CLIENTS] = {0};
+    
+    // Mảng cấu trúc cho WSAPoll
+    WSAPOLLFD fds[MAX_CLIENTS + 1];
+
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        printf("Error: WSAStartup failed\n");
+        return 1;
+    }
+
+    master_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (master_socket == INVALID_SOCKET) {
+        printf("Error: Could not create socket\n");
+        return 1;
+    }
+
+    server.sin_family = AF_INET;
+    server.sin_addr.s_addr = INADDR_ANY;
+    server.sin_port = htons(PORT);
+
+    if (bind(master_socket, (struct sockaddr *)&server, sizeof(server)) == SOCKET_ERROR) {
+        printf("Error: Bind failed\n");
+        return 1;
+    }
+
+    listen(master_socket, 5);
+    printf("Server dang chay tren port %d...\n", PORT);
+
+    while (1) {
+        fds[0].fd = master_socket;
+        fds[0].events = POLLRDNORM;
+        fds[0].revents = 0;
+
+        int nfds = 1;
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            if (clients[i].socket > 0) {
+                fds[nfds].fd = clients[i].socket;
+                fds[nfds].events = POLLRDNORM;
+                fds[nfds].revents = 0;
+                nfds++;
+            }
+        }
+
+        int ret = WSAPoll(fds, nfds, -1);
+        if (ret == SOCKET_ERROR) {
+            printf("Error: WSAPoll failed\n");
+            break;
+        }
+
+        if (fds[0].revents & POLLRDNORM) {
+            SOCKET new_socket = accept(master_socket, NULL, NULL);
+            int added = 0;
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (clients[i].socket == 0) {
+                    clients[i].socket = new_socket;
+                    clients[i].logged_in = 0;
+                    memset(clients[i].cmd_buffer, 0, BUFFER_SIZE);
+                    
+                    char *msg = "User Pass: ";
+                    send(new_socket, msg, (int)strlen(msg), 0);
+                    added = 1;
+                    break;
+                }
+            }
+            if (!added) closesocket(new_socket); // Hết chỗ
+        }
+
+        for (int i = 1; i < nfds; i++) {
+            if (fds[i].revents & (POLLRDNORM | POLLERR)) {
+                SOCKET curr_sock = fds[i].fd;
+                
+                // Tìm client tương ứng trong mảng clients
+                int c_idx = -1;
+                for(int j = 0; j < MAX_CLIENTS; j++) {
+                    if (clients[j].socket == curr_sock) {
+                        c_idx = j;
+                        break;
+                    }
+                }
+
+                char temp[BUFFER_SIZE] = {0};
+                int valread = recv(curr_sock, temp, sizeof(temp) - 1, 0);
+
+                if (valread <= 0) {
+                    // Client ngắt kết nối
+                    closesocket(curr_sock);
+                    if (c_idx != -1) clients[c_idx].socket = 0;
+                } else {
+                    strncat(clients[c_idx].cmd_buffer, temp, valread);
+                    char *pos = strchr(clients[c_idx].cmd_buffer, '\n');
+                    
+                    if (pos != NULL) {
+                        *pos = '\0';
+                        char *r_pos = strchr(clients[c_idx].cmd_buffer, '\r');
+                        if (r_pos) *r_pos = '\0';
+
+                        if (clients[c_idx].logged_in == 0) {
+                            char user[100], pass[100];
+                            if (sscanf(clients[c_idx].cmd_buffer, "%s %s", user, pass) == 2) {
+                                if (check_login(user, pass)) {
+                                    clients[c_idx].logged_in = 1;
+                                    char *ok = "Login OK.  \n";
+                                    send(curr_sock, ok, (int)strlen(ok), 0);
+                                } else {
+                                    char *fail = "Sai tai khoan. User Pass: ";
+                                    send(curr_sock, fail, (int)strlen(fail), 0);
+                                }
+                            }
+                        } else {
+                            char final_cmd[BUFFER_SIZE + 50];
+                            sprintf(final_cmd, "%s > out.txt 2>&1", clients[c_idx].cmd_buffer);
+                            system(final_cmd);
+                            send_command_result(curr_sock);
+                        }
+                        memset(clients[c_idx].cmd_buffer, 0, BUFFER_SIZE);
+                    }
+                }
+            }
+        }
+    }
+
+    closesocket(master_socket);
+    WSACleanup();
+    return 0;
+}
