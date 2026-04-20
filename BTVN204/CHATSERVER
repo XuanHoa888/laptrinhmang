@@ -1,0 +1,134 @@
+#include <stdio.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <time.h>
+#include <string.h>
+
+#pragma comment(lib, "ws2_32.lib")
+
+#define PORT 9000
+#define MAX_CLIENTS 100
+#define BUFFER_SIZE 1024
+
+typedef struct {
+    SOCKET socket;
+    char name[50];
+    int registered;
+    char cmd_buffer[BUFFER_SIZE];
+    int buffer_len;
+} Client;
+
+int main() {
+    WSADATA wsa;
+    SOCKET master_socket;
+    struct sockaddr_in server, address;
+    int addrlen = sizeof(address);
+    WSAPOLLFD fdarray[MAX_CLIENTS + 1];
+    Client clients[MAX_CLIENTS] = {0};
+
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+
+    master_socket = socket(AF_INET, SOCK_STREAM, 0);
+    server.sin_family = AF_INET;
+    server.sin_addr.s_addr = INADDR_ANY;
+    server.sin_port = htons(PORT);
+
+    bind(master_socket, (struct sockaddr *)&server, sizeof(server));
+    listen(master_socket, 5);
+
+    printf("Server CHAT dang chay tren port %d...\n", PORT);
+
+    while (1) {
+        // 1. Setup mang poll
+        fdarray[0].fd = master_socket;
+        fdarray[0].events = POLLIN;
+        int nfds = 1;
+
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            if (clients[i].socket > 0) {
+                fdarray[nfds].fd = clients[i].socket;
+                fdarray[nfds].events = POLLIN;
+                nfds++;
+            }
+        }
+
+        // 2. Cho su kien
+        if (WSAPoll(fdarray, nfds, -1) > 0) {
+            
+            // CO KET NOI MOI
+            if (fdarray[0].revents & POLLIN) {
+                SOCKET new_socket = accept(master_socket, (struct sockaddr *)&address, &addrlen);
+                for (int i = 0; i < MAX_CLIENTS; i++) {
+                    if (clients[i].socket == 0) {
+                        clients[i].socket = new_socket;
+                        clients[i].registered = 0;
+                        clients[i].buffer_len = 0;
+                        memset(clients[i].cmd_buffer, 0, BUFFER_SIZE);
+                        
+                        send(new_socket, msg, strlen(msg), 0);
+                        break;
+                    }
+                }
+            }
+
+            // KIEM TRA CAC CLIENT
+            int current_fd_ptr = 1;
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (clients[i].socket == 0) continue;
+
+                if (fdarray[current_fd_ptr].revents & POLLIN) {
+                    char temp[BUFFER_SIZE];
+                    int n = recv(clients[i].socket, temp, sizeof(temp) - 1, 0);
+
+                    if (n <= 0) {
+                        printf("Client %s ngat ket noi.\n", clients[i].name);
+                        closesocket(clients[i].socket);
+                        clients[i].socket = 0;
+                    } else {
+                        temp[n] = '\0';
+                        // Ghep vao buffer rieng cua tung client de xu ly dong
+                        strcat(clients[i].cmd_buffer, temp);
+                        
+                        if (strchr(clients[i].cmd_buffer, '\n')) {
+                            // Xoa ky tu xuong dong \r \n
+                            char *p = strtok(clients[i].cmd_buffer, "\r\n");
+                            
+                            if (!clients[i].registered) {
+                                // LOGIC DANG KY
+                                char name_temp[50];
+                                if (sscanf(p, "client_id: %s", name_temp) == 1) {
+                                    strcpy(clients[i].name, name_temp);
+                                    clients[i].registered = 1;
+                                    send(clients[i].socket, "DANG KY OK! \n", 33, 0);
+                                    printf("User '%s' da tham gia phong.\n", name_temp);
+                                } else {
+                                    send(clients[i].socket, "ERROR\n", 54, 0);
+                                }
+                            } else {
+                                // LOGIC BROADCAST (GUI CHO NGUOI KHAC)
+                                char send_msg[BUFFER_SIZE + 100];
+                                time_t now = time(0);
+                                struct tm *t = localtime(&now);
+                                char ts[20];
+                                strftime(ts, sizeof(ts), "%H:%M:%S", t);
+
+                                sprintf(send_msg, "[%s] %s: %s\n", ts, clients[i].name, p);
+                                printf("Broadcasting: %s", send_msg);
+
+                                for (int j = 0; j < MAX_CLIENTS; j++) {
+                                    if (clients[j].socket > 0 && clients[j].socket != clients[i].socket && clients[j].registered) {
+                                        send(clients[j].socket, send_msg, strlen(send_msg), 0);
+                                    }
+                                }
+                            }
+                            memset(clients[i].cmd_buffer, 0, BUFFER_SIZE);
+                        }
+                    }
+                }
+                current_fd_ptr++;
+            }
+        }
+    }
+    WSACleanup();
+    return 0;
+}
