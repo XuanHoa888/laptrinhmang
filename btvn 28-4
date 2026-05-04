@@ -1,0 +1,111 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <poll.h>
+
+#define PORT 9000
+#define MAX_CLIENTS 100
+#define MAX_TOPICS 10
+#define BUF_SIZE 1024
+
+typedef struct {
+    int fd;
+    char topics[MAX_TOPICS][50];
+    int topic_count;
+} Client;
+
+Client clients[MAX_CLIENTS];
+
+void handle_command(int client_idx, char *buffer) {
+    char cmd[10], topic[50], msg[BUF_SIZE];
+    int fd = clients[client_idx].fd;
+
+    if (sscanf(buffer, "%s %s", cmd, topic) < 2) return;
+
+    if (strcmp(cmd, "SUB") == 0) {
+        if (clients[client_idx].topic_count < MAX_TOPICS) {
+            strcpy(clients[client_idx].topics[clients[client_idx].topic_count++], topic);
+            printf("Client %d subscribed to: %s\n", fd, topic);
+        }
+    } 
+    else if (strcmp(cmd, "UNSUB") == 0) {
+        for (int i = 0; i < clients[client_idx].topic_count; i++) {
+            if (strcmp(clients[client_idx].topics[i], topic) == 0) {
+                for (int j = i; j < clients[client_idx].topic_count - 1; j++)
+                    strcpy(clients[client_idx].topics[j], clients[client_idx].topics[j+1]);
+                clients[client_idx].topic_count--;
+                printf("Client %d unsubscribed from: %s\n", fd, topic);
+                break;
+            }
+        }
+    } 
+    else if (strcmp(cmd, "PUB") == 0) {
+        // Lấy nội dung message (phần sau topic)
+        char *ptr = strstr(buffer, topic);
+        if (ptr) {
+            ptr += strlen(topic) + 1;
+            sprintf(msg, "[Topic %s]: %s", topic, ptr);
+            
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (clients[i].fd != -1) {
+                    for (int j = 0; j < clients[i].topic_count; j++) {
+                        if (strcmp(clients[i].topics[j], topic) == 0) {
+                            send(clients[i].fd, msg, strlen(msg), 0);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+int main() {
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in addr = {AF_INET, htons(PORT), INADDR_ANY};
+
+    bind(server_fd, (struct sockaddr *)&addr, sizeof(addr));
+    listen(server_fd, 5);
+
+    struct pollfd fds[MAX_CLIENTS + 1];
+    fds[0].fd = server_fd;
+    fds[0].events = POLLIN;
+
+    for (int i = 0; i < MAX_CLIENTS; i++) clients[i].fd = -1;
+
+    printf("Server listening on port %d...\n", PORT);
+
+    while (1) {
+        poll(fds, MAX_CLIENTS + 1, -1);
+
+        if (fds[0].revents & POLLIN) {
+            int new_fd = accept(server_fd, NULL, NULL);
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (clients[i].fd == -1) {
+                    clients[i].fd = new_fd;
+                    clients[i].topic_count = 0;
+                    fds[i+1].fd = new_fd;
+                    fds[i+1].events = POLLIN;
+                    break;
+                }
+            }
+        }
+
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            if (clients[i].fd != -1 && (fds[i+1].revents & POLLIN)) {
+                char buffer[BUF_SIZE] = {0};
+                int bytes = recv(clients[i].fd, buffer, sizeof(buffer), 0);
+                if (bytes <= 0) {
+                    close(clients[i].fd);
+                    clients[i].fd = -1;
+                    fds[i+1].fd = -1;
+                } else {
+                    handle_command(i, buffer);
+                }
+            }
+        }
+    }
+    return 0;
+}
